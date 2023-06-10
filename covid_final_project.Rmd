@@ -1,0 +1,345 @@
+---
+title: "Covid19_Final_Project"
+author: "Andrea Francu"
+date: "2023-05-20"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# Read in COVID-19 data
+
+Start by reading in data from four csv files on COVID data. The files include global data on cases and deaths from COVID, as well as case and death data for the United States.
+
+``` {r get_data}
+library(tidyverse)
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+files_names <- c("time_series_covid19_confirmed_US.csv",
+                  "time_series_covid19_confirmed_global.csv",
+                  "time_series_covid19_deaths_US.csv",
+                  "time_series_covid19_deaths_global.csv")
+
+urls <- str_c(url_in,files_names)
+```
+
+We can now assign each csv to a variable where we have all our data.
+
+```{r read_data}
+
+US_cases <- read_csv(urls[1])
+global_cases <- read_csv(urls[2])
+US_deaths <- read_csv(urls[3])
+global_deaths <- read_csv(urls[4])
+
+```
+
+# Clean and organize
+
+Make more R friendly! Get rid of rows we don't need, change format of dates, combine data for cases and deaths.
+```{r tidy_global_data}
+global_cases <- global_cases %>%
+    pivot_longer(cols = -c(`Province/State`,
+                            `Country/Region`, Lat, Long),
+                names_to = "date",
+                values_to = "cases") %>%
+    select(-c(Lat,Long))
+
+global_deaths <- global_deaths %>%
+    pivot_longer(cols = -c(`Province/State`,
+                            `Country/Region`, Lat, Long),
+                names_to = "date",
+                values_to = "deaths") %>%
+    select(-c(Lat,Long))
+
+global <- global_cases %>%
+  full_join(global_deaths) %>%
+  rename(Country_Region = `Country/Region`,
+         Province_State = `Province/State`) %>%
+  mutate(date = mdy(date))
+
+US_cases <- US_cases %>%
+  pivot_longer(cols = -(UID:Combined_Key),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(Admin2:cases) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat,Long_))
+
+
+US_deaths <- US_deaths %>%
+  pivot_longer(cols = -(UID:Population),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(Admin2:deaths) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat,Long_))
+
+US <- US_cases %>%
+  full_join(US_deaths)
+
+```
+
+
+Add population data for global data, so we can do comparative analysis between countries, and combine province/state and country/region.
+```{r add_population}
+
+global <- global %>%
+  unite("Combined_Key",
+        c(Province_State, Country_Region),
+        sep = ", ",
+        na.rm = TRUE,
+        remove = FALSE)
+
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+
+uid <- read_csv(uid_lookup_url) %>%
+  select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+
+global <- global %>%
+  left_join(uid, by = c("Province_State", "Country_Region")) %>%
+  select(-c(UID,FIPS)) %>%
+  select(Province_State, Country_Region, date, 
+         cases, deaths, Population,
+         Combined_Key)
+
+```
+
+# Visualize Data
+
+Now to visualize our data! First we're going to group the US data by state so we can compare between them more easily.
+``` {r by_state}
+
+US_by_state <- US %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths * 1000000 / Population) %>%
+  select(Province_State, Country_Region, date,
+         cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+
+```
+
+Then we're going to group the global data by country so we can compare between the countries. 
+``` {r by_country}
+
+global_by_country <- global %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths * 1000000 / Population) %>%
+  select(Province_State, Country_Region, date,
+         cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+
+```
+
+And then we can look at US data grouped by date.
+``` {r by_date}
+
+US_totals <- US_by_state %>%
+  group_by(Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths * 1000000 / Population) %>%
+  select(Country_Region, date,
+         cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+
+
+```
+
+
+Now to visualize the data!
+A bias in the data that should be noted is that every country reports COVID data differently, some more honestly than others. Different countries, and even states/districts within those, also have different requirements for considering a death to be cause by COVID. Some places consider anyone who dies while having COVID to be a COVID death, even if they had other conditions, or their death was cause by something else, while others only include it in the COVID death data if they believe the death was primarily caused by COVID. Another bias is that certain demographics are not as believed as others by doctors about their symptoms, and may not even recieve adequate testing or treatement. 
+``` {r visualize_US}
+
+US_totals %>%
+  filter(cases>0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) + 
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "Covid-19 in the US", y = NULL)
+
+```
+
+We can also visualize by specific states. I took a look at the cases and deaths from COVID in California, since this is where I live.
+```{r visualize_California}
+
+state <- "California"
+US_by_state %>%
+  filter(Province_State == state) %>%
+  filter(cases>0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) + 
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("Covid-19 in ", state), y = NULL)
+
+```
+
+I then took a look at the data in Colorado, since I lived there a few years.
+```{r visualize_Colorado}
+
+state2 <- "Colorado"
+US_by_state %>%
+  filter(Province_State == state2) %>%
+  filter(cases>0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) + 
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("Covid-19 in ", state2), y = NULL)
+
+```
+
+While the beginning of the COVID data seems more variable between the two states, the more recent data seems very similar. 
+
+
+Now to analyze whether cases have flattened off. We can do this by adding some new variables to look at new cases and deaths, and see if this is increasing or stabilizing.
+``` {r analyze}
+
+US_by_state <- US_by_state %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+
+US_totals <- US_totals %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+
+```
+
+Then we can visualize the data again by looking at these new variables:
+``` {r new_visualization}
+
+US_totals %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) + 
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "Covid-19 in the US", y = NULL)
+
+state <- "California"
+US_by_state %>%
+  filter(Province_State == state) %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) + 
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("Covid-19 in ", state), y = NULL)
+
+```
+
+It seems like over the past year or so, cases and deaths have stabilized quite a bit for both California and the US as a whole, especially compared to how much they varied the years prior to that. It seems like this year the new cases and deaths have actually gone down for the first time in a while.
+
+Now we can take a look at specific countries. I took a look at Romania first, since my family is from there.
+``` {r visualize_Romania}
+
+country <- "Romania"
+global_by_country %>%
+  filter(Country_Region == country) %>%
+  filter(cases>0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) + 
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("Covid-19 in ", country), y = NULL)
+
+```
+
+I then took a look at Belgium, where I was born
+``` {r visualize_Belgium}
+
+country <- "Belgium"
+global_by_country %>%
+  filter(Country_Region == country) %>%
+  filter(cases>0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) + 
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("Covid-19 in ", country), y = NULL)
+
+```
+
+When looking at COVID data over the years, many of the countries and states I've looked at follow similar patterns. With mroe variabliity in the beginning of the pandemic, cases and deaths have leveled off at very similar levels in all the places I've looked at. 
+
+# Model
+
+We can also look at the maximum number of cases and deaths by state to compare between them
+``` {r compare_states}
+
+US_state_totals <- US_by_state %>%
+  group_by(Province_State) %>%
+  summarize(deaths = max(deaths), cases = max(cases),
+            population = max(Population),
+            cases_per_thou = 1000 * cases / population,
+            deaths_per_thou = 1000 * deaths / population) %>%
+  filter(cases > 0, population > 0)
+
+US_state_totals %>%
+  slice_min(deaths_per_thou, n = 10) %>%
+  select(deaths_per_thou, cases_per_thou, everything())
+
+US_state_totals %>%
+  slice_max(deaths_per_thou, n = 10) %>%
+  select(deaths_per_thou, cases_per_thou, everything())
+
+```
+
+
+
+We are now going to model the data on cases and deaths by state and compare it to a linear model to see if cases and deaths from COVID are linearly correlated:
+``` {r linear_model}
+
+model <- lm(deaths_per_thou ~ cases_per_thou, data = US_state_totals)
+
+summary(model)
+
+US_tot_w_pred <- US_state_totals %>% 
+  mutate(pred = predict(model))
+
+US_tot_w_pred
+
+US_tot_w_pred %>% 
+  ggplot() +
+  geom_point(aes(x = cases_per_thou, y = deaths_per_thou), color = "green") +
+  geom_point(aes(x = cases_per_thou, y = pred), color = "purple")
+
+```
+
+While the data on cases per thousand people vs. deaths per thousand people by state do seem to generally follow the linear model relationship, many data points do fall pretty far form the model, so we cannot say for sure that they have a linear relationship. 
+
+
+
+
